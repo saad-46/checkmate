@@ -78,6 +78,87 @@ c.play(c.E.legal.find(m=>m.from===52&&m.to===36));c.goSetup();run(now+500);t("st
 // worker error path -> sync fallback still moves
 
 
+// ---- local two-player mode ----
+{
+  const S=(n)=>(8-+n[1])*8+n.charCodeAt(0)-97;
+  const mv=(a,b)=>{c.clickSq(S(a));c.clickSq(S(b));};
+  const seq=(str)=>str.split(" ").forEach(x=>mv(x.slice(0,2),x.slice(2,4)));
+  const startLocal=(extra)=>{c.state=Object.assign({opp:"local",mode:"casual",screen:"setup",diff:"hard",flipped:false},extra||{});c.startGame();return c.E;};
+  let L=startLocal();
+  t("local: flagged local, white perspective",L.local===true&&L.orient===1&&L.P.turn===1&&!L.timed);
+  let rv=c.renderVals();
+  t("local: summary casual",rv.summary==="Casual Chess · 2 Players · Auto-Rotate",rv.summary);
+  t("local: AI controls hidden",rv.aiMode===false);
+  t("local: labels",rv.bot.name==="PLAYER 1 · WHITE"&&rv.top.name==="PLAYER 2 · BLACK");
+  mv("e2","e4");
+  t("local: white moved -> black to move, board rotated",L.P.turn===-1&&L.orient===-1&&L.moves.length===1);
+  rv=c.renderVals();
+  t("local: panels follow rotation",rv.bot.name==="PLAYER 2 · BLACK"&&rv.top.name==="PLAYER 1 · WHITE"&&rv.squares[0].label.includes("h1"),rv.squares[0].label);
+  run(now+4000);
+  t("local: AI never moves",L.moves.length===1&&!c.state.thinking&&L.P.turn===-1);
+  mv("e7","e3");
+  t("local: illegal move: no rotate, no history",L.moves.length===1&&L.orient===-1&&L.P.turn===-1);
+  c.clickSq(S("e4")); // white piece on black's turn is not selectable
+  t("local: cannot select opponent piece",!(c.state.sel>=0)||c.state.sel===S("e7"));
+  c.state.sel=-1;
+  mv("e7","e5");
+  t("local: black moved -> rotated back",L.P.turn===1&&L.orient===1&&L.moves.length===2);
+  // castling + en passant + rotation parity
+  L=startLocal(); seq("e2e4 e7e5 g1f3 b8c6 f1c4 g8f6 e1g1");
+  t("local: castling both ways ok",L.P.b[S("g1")]===6&&L.P.b[S("f1")]===4&&L.orient===-1&&L.moves.length===7);
+  L=startLocal(); seq("e2e4 a7a6 e4e5 d7d5 e5d6");
+  t("local: en passant",L.P.b[S("d6")]===1&&L.P.b[S("d5")]===0&&L.orient===-1);
+  // promotion: no rotation until promotion chosen
+  L=startLocal(); seq("h2h4 g7g5 h4g5 a7a6 g5g6 a6a5 g6h7 a5a4"); mv("h7","g8");
+  t("local: promotion pending, no rotation",!!c.state.promo&&L.moves.length===8&&L.orient===1&&L.P.turn===1);
+  c.clickSq(S("a2")); // board input frozen while dialog open
+  t("local: input blocked during promotion",L.moves.length===8);
+  c.pickPromo(5);
+  t("local: promoted to queen then rotated",L.P.b[S("g8")]===5&&L.orient===-1&&L.moves.length===9&&/=Q/.test(L.moves[8].san),L.moves[8].san);
+  // fool's mate: ends before rotating
+  L=startLocal(); seq("f2f3 e7e5 g2g4 d8h4");
+  t("local: checkmate -> Player 2 wins, no extra rotation",L.result&&L.result.status==="Checkmate"&&L.result.winner===-1&&L.orient===-1&&/Player 2/.test(L.result.title),L.result&&L.result.title);
+  const before=L.moves.length; mv("a2","a3");
+  t("local: no moves after mate",L.moves.length===before);
+  t("local: PGN names/result",/\[White "Player 1"\]/.test(c.pgn())&&/\[Black "Player 2"\]/.test(c.pgn())&&/\[Result "0-1"\]/.test(c.pgn())&&!/Checkmate AI/.test(c.pgn())&&!/TimeControl/.test(c.pgn()));
+  c.undo();
+  t("local: undo after mate restores position and orientation",L.moves.length===3&&L.P.turn===-1&&L.orient===-1&&!L.result);
+  c.undo(); t("local: undo steps one ply",L.moves.length===2&&L.P.turn===1&&L.orient===1);
+  c.restartGame();
+  t("local: restart keeps mode, white perspective, player 1",c.E.local&&c.E.orient===1&&c.E.P.turn===1&&c.E.moves.length===0);
+  // resign
+  L=c.E; seq("e2e4"); c.doResign(-1);
+  t("local: resign -> opponent wins",L.result&&L.result.status==="Resigned"&&L.result.winner===1&&/Player 2/.test(L.result.title));
+  mv("e7","e5"); t("local: no move after resign",L.moves.length===1&&/\[Result "1-0"\]/.test(c.pgn()));
+  // timed local
+  L=startLocal({mode:"timed",preset:"z32"});
+  t("local timed: clocks 180s, white runs",L.timed&&L.clock.rem[1]===180000&&L.clock.rem[-1]===180000&&L.clock.turn===1);
+  now+=5000; mv("e2","e4");
+  t("local timed: white inc once, black clock starts, rotated",c.remaining(1)===177000&&L.clock.turn===-1&&L.orient===-1&&c.remaining(-1)===180000);
+  now+=3000; const wBefore=c.remaining(1); mv("e7","e5");
+  t("local timed: black inc once, white clock starts",c.remaining(-1)===179000&&c.remaining(1)===wBefore&&L.clock.turn===1&&L.orient===1);
+  rv=c.renderVals(); t("local timed: summary",rv.summary==="Timed Chess · 2 Players · Blitz · 3+2 · Auto-Rotate",rv.summary);
+  now+=200000; c.onTick();
+  t("local timed: timeout -> Player 2 wins on time, clocks stopped",L.result&&L.result.status==="Time out"&&L.result.winner===-1&&L.clock.turn===null&&L.orient===1);
+  mv("g1","f3"); t("local timed: no move after timeout",L.moves.length===2);
+  const mc=L.moves.length; c.undo(); t("local timed: undo blocked after timeout",L.moves.length===mc&&!!L.result);
+  rv=c.renderVals(); t("local timed: result label",/Player 2 wins on time/.test(rv.resultTitle),rv.resultTitle);
+  // timed local: undo does not refund time
+  L=startLocal({mode:"timed",preset:"z30"}); now+=4000; mv("e2","e4"); const r1=c.remaining(1); now+=1000; c.undo();
+  t("local timed: undo no refund, white clock runs",L.moves.length===0&&L.clock.turn===1&&c.remaining(1)<=r1+0&&L.orient===1);
+  // leaving to menu
+  mv("e2","e4"); c.goSetup();
+  t("local: menu stops clocks",c.E.clock.turn===null&&c.state.screen==="setup");
+  // AI mode still works after local game; summary strings
+  c.state=Object.assign(c.state,{opp:"ai",mode:"timed",preset:"z32",diff:"hard",screen:"setup"});
+  rv=c.renderVals(); t("ai: summary timed",rv.summary==="Timed Chess · vs Checkmate AI · Blitz · 3+2 · Expert",rv.summary);
+  c.state.mode="casual"; rv=c.renderVals(); t("ai: summary casual",rv.summary==="Casual Chess · vs Checkmate AI · Expert"&&rv.aiMode===true,rv.summary);
+  c.startGame(); t("ai: not local",c.E.local===false&&c.E.orient===1);
+  mv("e2","e4"); run(now+500); t("ai: AI replies (not local)",c.E.moves.length===2&&c.E.orient===1);
+  c.state.opp="local"; c.startGame(); c.E.gid++; run(now+3000);
+  t("switching to local launches no AI",c.E.local&&c.E.moves.length===0);
+}
+
 // ---- engine perft ----
 {const CKf=new Function(code.slice(0,code.indexOf("const CK_GL"))+";return CK;")();
  const perft=(P,d)=>{if(!d)return 1;let n=0;for(const m of CKf.legal(P)){CKf.make(P,m);n+=perft(P,d-1);CKf.unmake(P);}return n;};
